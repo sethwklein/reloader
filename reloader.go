@@ -7,48 +7,57 @@ import (
 	"fmt"
 	"github.com/howeyc/fsnotify"
 	"io"
+	"io/ioutil"
 	"log"
 	"math"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sethwklein.net/go/errutil"
 	"time"
 )
 
-const code = `<!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="utf-8">
-    <script>
+const payload = `<script>
+    (function() {
 	var poll = function() {
-		var xhr = new XMLHttpRequest();
-		xhr.onload = function() {
-			if (xhr.status === 408) {
-				console.log("timeout");
-				poll();
-			} else {
-				document.location.reload(true)
-			}
-		};
-		xhr.onerror = function() {
-			// reload to restart automatic reloading
-			// currently, we expect the user to figure this out without a tip
-			console.log("error", xhr);
-		};
-		xhr.open("GET", "/notification");
-		xhr.send();
+	    var xhr = new XMLHttpRequest();
+	    xhr.onload = function() {
+		if (xhr.status === 408) {
+		    poll();
+		} else {
+		    document.location.reload(true)
+		}
+	    };
+	    xhr.onerror = function() {
+		// BUG(sk): shutdown gracefully and don't report that as an error here
+		console.log("error", xhr);
+		console.log("reload to restart automatic reloading");
+	    };
+	    xhr.open("GET", "/notification");
+	    xhr.send();
 	};
 	poll();
-    </script>
-  </head>
-  <body>
-  </body>
-</html>
+    })();
+</script>
 `
 
-type UsageError struct {
-	error
+var (
+	rBody = regexp.MustCompile(`</[bB][oO][dD][yY][ \t\n]*>`)
+	rHtml = regexp.MustCompile(`</[hH][tT][mM][lL][ \t\n]*>`)
+)
+
+func injectionPoint(content []byte) int {
+	// BUG: this can be fooled by comments
+	match := rBody.FindIndex(content)
+	if len(match) > 0 {
+		return match[0]
+	}
+	match = rHtml.FindIndex(content)
+	if len(match) > 0 {
+		return match[0]
+	}
+	return len(content)
 }
 
 func mainError() (err error) {
@@ -77,27 +86,27 @@ func mainError() (err error) {
 		// have considered the possibility, so we do this hack.
 		var timer = time.NewTimer(math.MaxInt64)
 		timer.Stop()
+
 		var haveChange chan struct{}
 		for {
 			select {
 			case event, open := <-watcher.Event:
 				if !open {
-					log.Println("shutdown: watcher")
+					log.Println("shutting down file change watcher")
 					return
 				}
-				log.Println(event)
-				timer.Reset(time.Second / 4)
+				if event.Name == os.Args[1] {
+					timer.Reset(time.Second / 4)
+				}
 			case <-timer.C:
-				log.Println("storing change")
 				haveChange = changed
 			case haveChange <- struct{}{}:
-				log.Println("reported change")
 				haveChange = nil
 			}
 		}
 	}()
 
-	err = watcher.Watch(os.Args[1])
+	err = watcher.Watch(filepath.Dir(os.Args[1]))
 	if err != nil {
 		return err
 	}
@@ -106,13 +115,26 @@ func mainError() (err error) {
 		switch r.URL.Path {
 		case "/":
 			log.Println("serving", r.URL.Path)
-			w.Write([]byte(code))
+
+			content, err := ioutil.ReadFile(os.Args[1])
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+
+			w.Header().Set("Content-Type", "text/html")
+
+			i := injectionPoint(content)
+			w.Write(content[:i])
+			w.Write([]byte(payload))
+			w.Write(content[i:])
 		case "/notification":
 			log.Println("holding", r.URL.Path)
 			select {
 			case <-time.After(60 * time.Second):
 				w.WriteHeader(http.StatusRequestTimeout)
 			case <-changed:
+				log.Println("reporting change")
 				w.WriteHeader(200)
 			}
 		default:
@@ -125,6 +147,10 @@ func mainError() (err error) {
 	log.Println("listening on", address)
 	err = http.ListenAndServe(address, nil)
 	return err
+}
+
+type UsageError struct {
+	error
 }
 
 func Usage(w io.Writer) {
