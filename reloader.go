@@ -1,5 +1,5 @@
-// Command reloader serves an HTML file, injecting JavaScript into it that
-// uses long polling to reload when the file changes.
+// Command reloader serves a directory via HTTP, injecting JavaScript into the
+// HTML files that uses long polling to reload when the file changes.
 package main
 
 import (
