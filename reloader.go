@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"text/template"
 	"time"
 
 	"github.com/howeyc/fsnotify"
@@ -44,6 +45,8 @@ const payload = `<script>
 </script>
 `
 
+var payloadBytes = []byte(payload)
+
 var (
 	rBody = regexp.MustCompile(`</[bB][oO][dD][yY][ \t\n]*>`)
 	rHtml = regexp.MustCompile(`</[hH][tT][mM][lL][ \t\n]*>`)
@@ -60,6 +63,15 @@ func injectionPoint(content []byte) int {
 		return match[0]
 	}
 	return len(content)
+}
+
+// httpError replies to the request with the specified error message and HTTP code.
+// The error message should be plain text.
+func httpError(w http.ResponseWriter, error string, code int) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(code)
+	io.WriteString(w, template.HTMLEscapeString(error))
+	w.Write(payloadBytes)
 }
 
 func mainError() (err error) {
@@ -147,7 +159,7 @@ func mainError() (err error) {
 			content, err := ioutil.ReadFile(path)
 			if err != nil {
 				log.Printf("error %s: %s\n", path, err)
-				http.Error(w, err.Error(), http.StatusNotFound)
+				httpError(w, err.Error(), http.StatusNotFound)
 				return
 			}
 
@@ -162,7 +174,7 @@ func mainError() (err error) {
 
 			i := injectionPoint(content)
 			w.Write(content[:i])
-			w.Write([]byte(payload))
+			w.Write(payloadBytes)
 			w.Write(content[i:])
 		}
 	})
