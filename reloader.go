@@ -3,9 +3,9 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
-	"github.com/howeyc/fsnotify"
 	"io"
 	"io/ioutil"
 	"log"
@@ -14,8 +14,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sethwklein.net/go/errutil"
 	"time"
+
+	"github.com/howeyc/fsnotify"
+	"sethwklein.net/go/errutil"
 )
 
 const payload = `<script>
@@ -62,11 +64,13 @@ func injectionPoint(content []byte) int {
 
 func mainError() (err error) {
 	if len(os.Args) < 2 {
-		return UsageError{errors.New("filename required")}
+		return UsageError{errors.New("directory required")}
 	}
 	if os.Args[1] == "--help" {
 		return UsageError{nil}
 	}
+
+	directory := os.Args[1]
 
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -90,14 +94,12 @@ func mainError() (err error) {
 		var haveChange chan struct{}
 		for {
 			select {
-			case event, open := <-watcher.Event:
+			case _, open := <-watcher.Event:
 				if !open {
 					log.Println("shutting down file change watcher")
 					return
 				}
-				if event.Name == os.Args[1] {
-					timer.Reset(time.Second / 4)
-				}
+				timer.Reset(time.Second / 4)
 			case <-timer.C:
 				haveChange = changed
 			case haveChange <- struct{}{}:
@@ -106,28 +108,13 @@ func mainError() (err error) {
 		}
 	}()
 
-	err = watcher.Watch(filepath.Dir(os.Args[1]))
+	err = watcher.Watch(directory)
 	if err != nil {
 		return err
 	}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/":
-			log.Println("serving", r.URL.Path)
-
-			content, err := ioutil.ReadFile(os.Args[1])
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusNotFound)
-				return
-			}
-
-			w.Header().Set("Content-Type", "text/html")
-
-			i := injectionPoint(content)
-			w.Write(content[:i])
-			w.Write([]byte(payload))
-			w.Write(content[i:])
 		case "/notification":
 			log.Println("holding", r.URL.Path)
 			select {
@@ -138,8 +125,33 @@ func mainError() (err error) {
 				w.WriteHeader(200)
 			}
 		default:
-			log.Println("not found:", r.URL.Path)
-			http.NotFound(w, r)
+			url := r.URL.Path
+			if url == "/" {
+				url = "/index.html"
+			}
+
+			path := filepath.Join(directory, filepath.FromSlash(url))
+
+			content, err := ioutil.ReadFile(path)
+			if err != nil {
+				log.Printf("error %s: %s\n", path, err)
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+
+			if filepath.Ext(url) != ".html" && http.DetectContentType(content) != "text/html" {
+				log.Printf("blob %s\n", path)
+				http.ServeContent(w, r, url, time.Time{}, bytes.NewReader(content))
+				return
+			}
+
+			log.Printf("html %s\n", path)
+			w.Header().Set("Content-Type", "text/html")
+
+			i := injectionPoint(content)
+			w.Write(content[:i])
+			w.Write([]byte(payload))
+			w.Write(content[i:])
 		}
 	})
 
