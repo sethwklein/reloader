@@ -84,14 +84,19 @@ func mainError() (err error) {
 		}
 	}()
 
-	changed := make(chan struct{})
+	changed := make(chan chan int)
 	go func() {
 		// we want a stopped timer. whoever designed time.Timer may not
 		// have considered the possibility, so we do this hack.
-		var timer = time.NewTimer(math.MaxInt64)
-		timer.Stop()
+		settled := time.NewTimer(math.MaxInt64)
+		settled.Stop()
 
-		var haveChange chan struct{}
+		const patience = 60 * time.Second
+		timeout := time.NewTimer(patience)
+
+		var listeners []chan int
+		next := make(chan int, 1)
+
 		for {
 			select {
 			case _, open := <-watcher.Event:
@@ -99,11 +104,22 @@ func mainError() (err error) {
 					log.Println("shutting down file change watcher")
 					return
 				}
-				timer.Reset(time.Second / 4)
-			case <-timer.C:
-				haveChange = changed
-			case haveChange <- struct{}{}:
-				haveChange = nil
+				settled.Reset(time.Second / 4)
+			case <-settled.C:
+				for _, listener := range listeners {
+					listener <- 200
+				}
+				listeners = listeners[:0]
+				timeout.Reset(patience)
+			case <-timeout.C:
+				for _, listener := range listeners {
+					listener <- http.StatusRequestTimeout
+				}
+				listeners = listeners[:0]
+				timeout.Reset(patience)
+			case changed <- next:
+				listeners = append(listeners, next)
+				next = make(chan int, 1)
 			}
 		}
 	}()
@@ -117,13 +133,9 @@ func mainError() (err error) {
 		switch r.URL.Path {
 		case "/notification":
 			log.Println("holding", r.URL.Path)
-			select {
-			case <-time.After(60 * time.Second):
-				w.WriteHeader(http.StatusRequestTimeout)
-			case <-changed:
-				log.Println("reporting change")
-				w.WriteHeader(200)
-			}
+			status := <-<-changed
+			log.Println("reporting", status)
+			w.WriteHeader(status)
 		default:
 			url := r.URL.Path
 			if url == "/" {
