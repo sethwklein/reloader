@@ -23,9 +23,26 @@ import (
 
 const payload = `<script>
     (function() {
+      var disabler = document.createElement('div');
+	disabler.style.position = 'fixed';
+	disabler.style.left = '1px';
+	disabler.style.top = '1px';
+	disabler.style.width = '10px';
+	disabler.style.height = '10px';
+	disabler.style.borderRadius = '5px';
+	disabler.style.backgroundColor = 'red';
+	disabler.style.cursor = 'pointer';
+	// disabler.appendChild(document.createTextNode("..."));
+	document.body.appendChild(disabler);
 	var poll = function() {
 	    var xhr = new XMLHttpRequest();
+	    var abort = function() {
+		xhr.abort();
+		disabler.style.display = 'none';
+	    };
+	    disabler.addEventListener("click", abort, false);
 	    xhr.onload = function() {
+	      disabler.removeEventListener("click", abort, false);
 		if (xhr.status === 408) {
 		    poll();
 		} else {
@@ -33,6 +50,7 @@ const payload = `<script>
 		}
 	    };
 	    xhr.onerror = function() {
+	      disabler.removeEventListener("click", abort, false);
 		// BUG(sk): shutdown gracefully and don't report that as an error here
 		console.log("error", xhr);
 		console.log("reload to restart automatic reloading");
