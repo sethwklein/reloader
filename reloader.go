@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"text/template"
 	"time"
 
@@ -133,10 +134,14 @@ func mainError() (err error) {
 
 		for {
 			select {
-			case _, open := <-watcher.Event:
+			case event, open := <-watcher.Event:
 				if !open {
 					log.Println("shutting down file change watcher")
 					return
+				}
+				if name := filepath.Base(event.Name); strings.HasPrefix(name, ".") {
+					log.Println("ignoring", name)
+					continue
 				}
 				settled.Reset(time.Second / 4)
 			case <-settled.C:
